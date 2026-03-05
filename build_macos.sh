@@ -14,6 +14,7 @@ from icnsutil import IcnsFile
 
 ico_path = "icon.ico"
 out_icns = "icon.icns"
+out_template = "icon_template.png"
 
 img = Image.open(ico_path)
 
@@ -55,6 +56,14 @@ try:
     for name, _ in entries:
         icns.add_media(file=os.path.join(tmp_dir, name))
     icns.write(out_icns)
+
+    # Generate a monochrome template icon for macOS menu bar
+    base = best.resize((32, 32), Image.LANCZOS)
+    base = base.convert("RGBA")
+    r, g, b, a = base.split()
+    black = Image.new("RGBA", base.size, (0, 0, 0, 255))
+    template = Image.composite(black, Image.new("RGBA", base.size, (0, 0, 0, 0)), a)
+    template.save(out_template, format="PNG")
 finally:
     shutil.rmtree(tmp_dir, ignore_errors=True)
 PY
@@ -86,6 +95,8 @@ python3 -m PyInstaller \
   --exclude-module pandas \
   --exclude-module scipy \
   --add-data "icon.ico:." \
+  --add-data "icon.icns:." \
+  --add-data "icon_template.png:." \
   --add-data "static:static" \
   --add-data "config.json:." \
   py_pctv.py

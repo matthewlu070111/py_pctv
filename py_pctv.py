@@ -31,6 +31,11 @@ except Exception:
     Image = None
     ImageDraw = None
 
+try:
+    import rumps
+except Exception:
+    rumps = None
+
 app_version = "2.0.0"
 DEFAULT_REPO = "matthewlu070111/py_pctv"
 _runtime = None
@@ -116,8 +121,28 @@ def ensure_runtime_files():
     if os.path.exists(src_icon) and not os.path.exists(dst_icon):
         shutil.copy2(src_icon, dst_icon)
 
+    src_icns = os.path.join(bundle_root, "icon.icns")
+    dst_icns = os.path.join(local_root, "icon.icns")
+    if os.path.exists(src_icns) and not os.path.exists(dst_icns):
+        shutil.copy2(src_icns, dst_icns)
+
+    src_template = os.path.join(bundle_root, "icon_template.png")
+    dst_template = os.path.join(local_root, "icon_template.png")
+    if os.path.exists(src_template) and not os.path.exists(dst_template):
+        shutil.copy2(src_template, dst_template)
+
 
 def get_runtime_icon_path():
+    if sys.platform == "darwin":
+        local_icns = os.path.join(tools.get_local_path(), "icon.icns")
+        if os.path.exists(local_icns):
+            return local_icns
+        bundle_root = getattr(sys, "_MEIPASS", "")
+        if bundle_root:
+            bundle_icns = os.path.join(bundle_root, "icon.icns")
+            if os.path.exists(bundle_icns):
+                return bundle_icns
+
     local_icon = os.path.join(tools.get_local_path(), "icon.ico")
     if os.path.exists(local_icon):
         return local_icon
@@ -129,6 +154,19 @@ def get_runtime_icon_path():
             return bundle_icon
 
     return ""
+
+
+def get_runtime_menu_icon_path():
+    if sys.platform == "darwin":
+        local_template = os.path.join(tools.get_local_path(), "icon_template.png")
+        if os.path.exists(local_template):
+            return local_template
+        bundle_root = getattr(sys, "_MEIPASS", "")
+        if bundle_root:
+            bundle_template = os.path.join(bundle_root, "icon_template.png")
+            if os.path.exists(bundle_template):
+                return bundle_template
+    return get_runtime_icon_path()
 
 
 class AppRuntime:
@@ -158,6 +196,16 @@ class AppRuntime:
         web.app.app_version = app_version
         web.app.default_github_repo = self.config.get("update", {}).get("github_repo", DEFAULT_REPO)
 
+        bind_host = get_bind_host(self.config)
+        bind_port = get_port(self.config)
+        try:
+            self.server = make_server(bind_host, bind_port, web.app, threaded=True)
+        except Exception as err:
+            self.server_error = str(err)
+            tools.console_log("[ERROR]Web服务启动失败: %s" % err)
+            self.running = False
+            return
+
         self.live_thread = tv_5xtv.tv_5xtv(self.config, 1)
         self.live_thread.start()
         web.app.tv_threads = {"5xtv": self.live_thread}
@@ -170,10 +218,6 @@ class AppRuntime:
                 "live": gc.APP_5XTV_M3U8_FILE.replace("./static/", ""),
             }
         )
-
-        bind_host = get_bind_host(self.config)
-        bind_port = get_port(self.config)
-        self.server = make_server(bind_host, bind_port, web.app, threaded=True)
         self.server_thread = threading.Thread(target=self._serve_forever, daemon=True)
         self.server_thread.start()
         self.running = True
@@ -231,9 +275,53 @@ def run_without_tray(runtime):
         runtime.stop()
 
 
+def _tray_supported():
+    if pystray is None or Image is None:
+        if sys.platform == "darwin" and rumps is not None:
+            return True
+        return False
+    if os.name == "nt":
+        return True
+    if sys.platform == "darwin":
+        return True
+    return False
+
+
 def run_tray(runtime):
-    if os.name != "nt" or pystray is None or Image is None:
+    if not _tray_supported():
         run_without_tray(runtime)
+        return
+
+    if sys.platform == "darwin" and rumps is not None:
+        class MacTrayApp(rumps.App):
+            def __init__(self):
+                icon_path = get_runtime_menu_icon_path()
+                super().__init__(
+                    "PCTV",
+                    icon=icon_path if icon_path else None,
+                    template=True,
+                    quit_button=None,
+                )
+                self.menu = [
+                    rumps.MenuItem("打开控制台", self.on_open_dashboard),
+                    rumps.MenuItem("打开播放页", self.on_open_player),
+                    None,
+                    rumps.MenuItem("退出", self.on_exit),
+                ]
+
+            def on_open_dashboard(self, _):
+                open_dashboard(runtime.config)
+
+            def on_open_player(self, _):
+                open_player(runtime.config)
+
+            def on_exit(self, _):
+                runtime.stop()
+                rumps.quit_application()
+
+        if runtime.config.get("app", {}).get("auto_open_dashboard", True):
+            threading.Timer(1.2, lambda: open_dashboard(runtime.config)).start()
+        MacTrayApp().run()
         return
 
     def on_open_dashboard(icon, item):
@@ -286,4 +374,7 @@ if __name__ == "__main__":
 
     _runtime = AppRuntime(config)
     _runtime.start()
+    if not _runtime.running:
+        tools.console_log("[ERROR]服务未启动，程序退出")
+        raise SystemExit(1)
     run_tray(_runtime)
